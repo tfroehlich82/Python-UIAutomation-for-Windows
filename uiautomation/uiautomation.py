@@ -63,9 +63,11 @@ class _AutomationClient:
                 break
             except Exception as ex:
                 if retry + 1 == tryCount:
-                    Logger.WriteLine('''Can not load UIAutomationCore.dll.
+                    Logger.WriteLine('''
+{}
+Can not load UIAutomationCore.dll.
 1, You may need to install Windows Update KB971513 if your OS is Windows XP, see https://github.com/yinkaisheng/WindowsUpdateKB971513ForIUIAutomation
-2, you need to use an UIAutomationInitializerInThread object in a thread, see demos/uiautomation_in_thread.py''', ConsoleColor.Yellow)
+2, you need to use an UIAutomationInitializerInThread object if use uiautomation in a thread, see demos/uiautomation_in_thread.py'''.format(ex), ConsoleColor.Yellow)
                     raise ex
 
 
@@ -83,7 +85,7 @@ class _DllClient:
         binPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
         os.environ["PATH"] = binPath + os.pathsep + os.environ["PATH"]
         load = False
-        if sys.version >= '3.8':
+        if (sys.version_info[0] == 3 and sys.version_info[1] >= 8) or sys.version_info[0] > 3:
             os.add_dll_directory(binPath)
         if sys.maxsize > 0xFFFFFFFF:
             try:
@@ -105,7 +107,7 @@ class _DllClient:
             self.dll.BitmapFromFile.restype = ctypes.c_size_t
             self.dll.BitmapResizedFrom.restype = ctypes.c_size_t
             self.dll.BitmapRotatedFrom.restype = ctypes.c_size_t
-
+            self.dll.BitmapGetPixel.restype = ctypes.c_uint32
             self.dll.Initialize()
         else:
             self.dll = None
@@ -4146,13 +4148,13 @@ class GridPattern():
         """
         return self.pattern.CurrentRowCount
 
-    def GetItem(self) -> 'Control':
+    def GetItem(self, row:int, column:int) -> 'Control':
         """
         Call IUIAutomationGridPattern::GetItem.
         Return `Control` subclass, a control representing an item in the grid.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationgridpattern-getitem
         """
-        return Control.CreateControlFromElement(self.pattern.GetItem())
+        return Control.CreateControlFromElement(self.pattern.GetItem(row, column))
 
 
 class InvokePattern():
@@ -6085,13 +6087,16 @@ class Control():
         return self.Element.CurrentName or ''   # CurrentName may be None
 
     @property
-    def NativeWindowHandle(self) -> str:
+    def NativeWindowHandle(self) -> int:
         """
         Property NativeWindowHandle.
         Call IUIAutomationElement::get_CurrentNativeWindowHandle.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-get_currentnativewindowhandle
         """
-        handle = self.Element.CurrentNativeWindowHandle
+        try:
+            handle = self.Element.CurrentNativeWindowHandle
+        except comtypes.COMError as ex:
+            return 0
         return 0 if handle is None else handle
 
     @property
@@ -6470,6 +6475,22 @@ class Control():
             else:
                 return False
         return True
+
+    def GetPosition(self, ratioX: float = 0.5, ratioY: float = 0.5) -> Tuple[int, int]:
+        """
+        Gets the position of the center of the control.
+        ratioX: float.
+        ratioY: float.
+        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0)
+        """
+        rect = self.BoundingRectangle
+        if rect.width() == 0 or rect.height() == 0:
+            Logger.ColorfullyLog('<Color=Yellow>Can not move cursor</Color>. {}\'s BoundingRectangle is {}. SearchProperties: {}'.format(
+                self.ControlTypeName, rect, self.GetColorfulSearchPropertiesStr()))
+            return
+        x = rect.left + int(rect.width() * ratioX)
+        y = rect.top + int(rect.height() * ratioY)
+        return x, y
 
     def MoveCursorToInnerPos(self, x: int = None, y: int = None, ratioX: float = 0.5, ratioY: float = 0.5, simulateMove: bool = True) -> Tuple[int, int]:
         """
@@ -7713,6 +7734,24 @@ class TableControl(Control):
         Return `TableItemPattern` if it supports the pattern else None(Must support according to MSDN).
         """
         return self.GetPattern(PatternId.TableItemPattern)
+
+    def GetTableItemsValue(self, row: int = -1, column: int = -1):
+        """
+        Get the value of a table
+        row: int. Position of the row in the table
+        column: int. Position of the column in the table
+        Return a list with values in the table.
+        If a row and column is specified, return a cell value.
+        If only a row is specified, return a list with row values
+        """
+        table = []
+        for row in self.GetChildren():
+            table.append([cell.GetLegacyIAccessiblePattern().Value for cell in row.GetChildren()])
+        if row > 0 and column > 0:
+            return table[row][column]
+        if row > 0:
+            return table[row]
+        return table
 
 
 class TextControl(Control):
